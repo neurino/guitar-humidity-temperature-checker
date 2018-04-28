@@ -12,12 +12,22 @@
 #define INNER_PAUSE 125  // Duration of pause between dot and dash in a character 
 #define CHAR_BREAK 250   // Duration of pause between characters
 #define START_FAST_REP 5 // Number of times message is repeated at startup with short delay
+#define TEMPS_SIZE 40    // Number of temp measurements to detect spikes
+                         // if 40 max time span is 40 * 8s = 320s = 5m20s
 
 Adafruit_HTU21DF htu = Adafruit_HTU21DF();
 //SendOnlySoftwareSerial mySerial (4);  // Tx pin
 
 float temp, hum;
 bool warn;
+
+// we store 40 temp measurement, 1 each 4 to 8 seconds
+// so max time span is 40 * 8s = 320s = 5m20s
+byte temps[TEMPS_SIZE];
+byte temps_idx = 0;
+byte min_t, max_t;
+bool is_temps_full = false;
+byte bright = 0;
 
 // *** BEGIN POWER SAVE CODE ** //
 
@@ -98,6 +108,17 @@ void dash(){
   delay(INNER_PAUSE);
 }
 
+void pulse(){
+  byte b = 0;
+  bool rise = true;
+  do {
+    b = (rise) ? b + 5 : b - 5;
+    if (b == 255) rise = false;
+    analogWrite(LED_BUILTIN, b);
+    delay(15);
+  } while (b > 0);
+}
+
 void setup() {
   // *** BEGIN POWER SAVE CODE ** //
   //we don't do any analog to digital conversion here, nor using timer 1
@@ -129,6 +150,22 @@ void loop() {
   //compensated humidity calculation accodring to datasheet
   hum = htu.readHumidity() + (25 - temp) * -0.15;
 
+  //sensor range is -40 ~ 125 celsius, we can store in an unsigned byte
+  //adding 40 to make it always positive, measuring difference between min and max 
+  //result will be unaffected. Adding also 0.5 so casting acts a rounding.
+  temps[temps_idx++] = temp + 40.5;
+  
+  min_t = temps[0];
+  max_t = temps[0];
+  for (byte i = 1; i < ((is_temps_full) ? TEMPS_SIZE : temps_idx); i++){
+    min_t = min(min_t, temps[i]);
+    max_t = max(max_t, temps[i]);  
+  }
+  if (temps_idx == TEMPS_SIZE){
+    is_temps_full = true;
+    temps_idx = 0;
+  }
+  
   /*
   mySerial.print("Temp: ");
   mySerial.print(temp);
@@ -139,37 +176,50 @@ void loop() {
 
   warn = false;
 
+  if (max_t - min_t > 10){
+     //[S]PIKE is a pulse
+    power_adc_enable();
+    pulse();
+    power_adc_disable();
+    warn = true;
+  }
+
   if (hum > 75 || hum < 25 || temp < 5 || temp > 50){
+    if (warn) delay(CHAR_BREAK);
     //[V]ERY ...-
-    dot(); dot(); dot(); dash(); delay(CHAR_BREAK);
+    dot(); dot(); dot(); dash();
+    warn = true;
   }
 
   if (hum > 60){
+    if (warn) delay(CHAR_BREAK);
     //[M]OIST --
-    dash(); dash(); delay(CHAR_BREAK);
+    dash(); dash();
     warn = true;
   } else if (hum < 40){
+    if (warn) delay(CHAR_BREAK);
     //[D]RY -..
-    dash(); dot(); dot(); delay(CHAR_BREAK);
+    dash(); dot(); dot();
     warn = true;
   }
   
   if (temp < 15){
+    if (warn) delay(CHAR_BREAK);
     //[C]OLD -.-.
-    dash(); dot(); dash(); dot(); delay(CHAR_BREAK);
+    dash(); dot(); dash(); dot();
     warn = true;
   } else if (temp > 40){
+    if (warn) delay(CHAR_BREAK);
     //[H]OT ....
-    dot(); dot(); dot(); dot(); delay(CHAR_BREAK);
+    dot(); dot(); dot(); dot();
     warn = true;
   }
 
   if (! warn){
-    //alive bip
-    dot(); delay(CHAR_BREAK);
+    //alive blink
+    dot();
   }
   
-  //delay(5000);
   //go sleep for N seconds
   goSleep();
 }
